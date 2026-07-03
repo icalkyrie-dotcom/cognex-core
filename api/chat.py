@@ -9,6 +9,7 @@ from db.database import (
     get_messages,
     save_message,
     get_all_memories,
+    set_memory,
 )
 from llm.llm import generate_response
 from config import APP_SECRET_KEY
@@ -62,6 +63,71 @@ def generate_title(message: str) -> str:
         return "New Chat"
 
 
+def extract_and_save_facts(db: Session, user_message: str):
+    """
+    Ekstrak fakta penting dari pesan user.
+    Hanya simpan fakta yang benar-benar fact-worthy.
+    """
+    prompt = [
+        {
+            "role": "user",
+            "content": user_message,
+        }
+    ]
+
+    system = """Tugasmu adalah mengekstrak fakta penting tentang user dari pesan berikut.
+
+Fakta yang layak disimpan (fact-worthy):
+- Nama user
+- Pekerjaan atau profesi
+- Tujuan karier atau hidup
+- Skill atau teknologi yang sedang dipelajari
+- Project yang sedang dikerjakan
+- Preferensi atau kebiasaan penting
+- Informasi personal yang relevan jangka panjang
+
+Yang TIDAK perlu disimpan:
+- Pertanyaan biasa
+- Fakta umum yang bukan tentang user
+- Informasi yang terlalu spesifik atau tidak relevan jangka panjang
+
+Format respons (JSON array, kosong jika tidak ada fakta):
+[
+  {"key": "nama", "value": "Budi"},
+  {"key": "pekerjaan", "value": "Backend Engineer"}
+]
+
+Jika tidak ada fakta yang layak disimpan, balas dengan array kosong: []
+Balas HANYA dengan JSON. Tidak ada teks lain."""
+
+    try:
+        result = generate_response(prompt, system=system)
+        result = result.strip()
+
+        # Bersihkan markdown code block kalau ada
+        if result.startswith("```"):
+            lines = result.split("\n")
+            result = "\n".join(lines[1:-1])
+
+        import json
+        facts = json.loads(result)
+
+        if not isinstance(facts, list):
+            return
+
+        for fact in facts:
+            if isinstance(fact, dict) and "key" in fact and "value" in fact:
+                key = str(fact["key"]).strip().lower().replace(" ", "_")
+                value = str(fact["value"]).strip()
+                if key and value:
+                    set_memory(db, key, value)
+                    print(f"💾 Saved memory: {key} = {value}")
+
+    except Exception as e:
+        # Silent fail — jangan ganggu flow chat utama
+        print(f"⚠️ Memory extraction failed: {e}")
+
+
 @router.post("/chat")
 def chat(
     request: ChatRequest,
@@ -79,7 +145,6 @@ def chat(
         conversation = create_conversation(db)
         is_new_conversation = True
 
-    # Auto-generate title dari pesan pertama
     if is_new_conversation:
         title = generate_title(request.message)
         conversation.title = title
@@ -94,6 +159,9 @@ def chat(
 
     save_message(db, conversation.id, "user", request.message)
     save_message(db, conversation.id, "assistant", response_text)
+
+    # Ekstrak fakta dari pesan user secara otomatis
+    extract_and_save_facts(db, request.message)
 
     return {
         "conversation_id": conversation.id,
