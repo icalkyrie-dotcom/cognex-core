@@ -1,0 +1,9 @@
+{
+  "voice": true,
+  "memory": true,
+  "multi_session": true,
+  "web_search": false,
+  "document_reader": false,
+  "rag": false,
+  "tool_use": false
+}

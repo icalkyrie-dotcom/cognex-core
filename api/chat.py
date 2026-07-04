@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+import json
 
 from db.database import (
     get_db,
@@ -12,6 +13,7 @@ from db.database import (
     set_memory,
 )
 from llm.llm import generate_response
+from core.context_builder import build_context
 from config import APP_SECRET_KEY
 
 router = APIRouter()
@@ -27,32 +29,9 @@ def verify_api_key(x_api_key: str = Header(...)):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-BASE_PROFILE = """
-Kamu adalah Jarvis, AI Advisor pribadi.
-
-Cara menjawab:
-- Singkat dan langsung ke inti. Maksimal 2-3 kalimat.
-- Tidak perlu salam, basa-basi, atau penutup.
-- Kalau user salah, katakan langsung.
-- Kalau butuh detail, user akan minta sendiri.
-- Gunakan bahasa yang natural, bukan bahasa robot.
-- Jadi lah seperti teman ku 
-"""
-
-
 def build_system_prompt(db: Session) -> str:
     memories = get_all_memories(db)
-    if not memories:
-        return BASE_PROFILE
-
-    memory_text = "\n".join([f"- {m.key}: {m.value}" for m in memories])
-    return f"""{BASE_PROFILE}
-
-Berikut adalah informasi penting tentang user yang harus selalu kamu ingat:
-{memory_text}
-
-Gunakan informasi ini untuk memberikan jawaban yang personal dan relevan.
-"""
+    return build_context(memories=memories)
 
 
 def generate_title(message: str) -> str:
@@ -70,17 +49,7 @@ def generate_title(message: str) -> str:
 
 
 def extract_and_save_facts(db: Session, user_message: str):
-    """
-    Ekstrak fakta penting dari pesan user.
-    Hanya simpan fakta yang benar-benar fact-worthy.
-    """
-    prompt = [
-        {
-            "role": "user",
-            "content": user_message,
-        }
-    ]
-
+    prompt = [{"role": "user", "content": user_message}]
     system = """Tugasmu adalah mengekstrak fakta penting tentang user dari pesan berikut.
 
 Fakta yang layak disimpan (fact-worthy):
@@ -110,12 +79,10 @@ Balas HANYA dengan JSON. Tidak ada teks lain."""
         result = generate_response(prompt, system=system)
         result = result.strip()
 
-        # Bersihkan markdown code block kalau ada
         if result.startswith("```"):
             lines = result.split("\n")
             result = "\n".join(lines[1:-1])
 
-        import json
         facts = json.loads(result)
 
         if not isinstance(facts, list):
@@ -130,7 +97,6 @@ Balas HANYA dengan JSON. Tidak ada teks lain."""
                     print(f"💾 Saved memory: {key} = {value}")
 
     except Exception as e:
-        # Silent fail — jangan ganggu flow chat utama
         print(f"⚠️ Memory extraction failed: {e}")
 
 
@@ -166,7 +132,6 @@ def chat(
     save_message(db, conversation.id, "user", request.message)
     save_message(db, conversation.id, "assistant", response_text)
 
-    # Ekstrak fakta dari pesan user secara otomatis
     extract_and_save_facts(db, request.message)
 
     return {
