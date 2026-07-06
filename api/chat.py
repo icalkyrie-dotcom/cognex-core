@@ -16,6 +16,7 @@ from db.database import (
 from llm.llm import generate_response
 from core.context_builder import build_context
 from tools.tool_manager import get_tool_definitions, execute_tool
+from rag.retrieval import retrieve, format_for_prompt, should_use_rag
 from config import APP_SECRET_KEY
 
 router = APIRouter()
@@ -184,6 +185,19 @@ def chat(
 
     system_prompt = build_system_prompt(db)
 
+    # RAG retrieval
+    rag_context = ""
+    try:
+        if should_use_rag(request.message):
+            rag_results = retrieve(request.message, limit=3, threshold=0.3)
+            if rag_results:
+                rag_context = format_for_prompt(rag_results)
+                print(f"📚 RAG: {len(rag_results)} chunks retrieved")
+            else:
+                print("📚 RAG: no relevant chunks found")
+    except Exception as e:
+        print(f"⚠️ RAG retrieval failed: {e}")
+
     # Tool calling check
     tool_used = None
     tool_definitions = get_tool_definitions()
@@ -206,7 +220,11 @@ def chat(
             )
         })
 
-    response_text = generate_response(messages, system=system_prompt)
+    final_system = system_prompt
+    if rag_context:
+        final_system = system_prompt + f"\n\n---\n\n{rag_context}"
+
+    response_text = generate_response(messages, system=final_system)
 
     save_message(db, conversation.id, "user", request.message)
     save_message(db, conversation.id, "assistant", response_text)
@@ -218,4 +236,5 @@ def chat(
         "title": conversation.title,
         "response": response_text,
         "tool_used": tool_used,
+        "rag_used": bool(rag_context),
     }

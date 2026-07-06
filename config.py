@@ -15,3 +15,10 @@ DATABASE_URL = os.getenv(
 )
 
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
+VECTOR_DATABASE_URL = os.getenv("VECTOR_DATABASE_URL")
+
+EMBEDDING_PROVIDER = os.getenv(
+    "EMBEDDING_PROVIDER",
+    "sentence_transformers"
+)
