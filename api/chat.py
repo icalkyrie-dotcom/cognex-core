@@ -109,32 +109,53 @@ Balas HANYA dengan JSON."""
         print(f"⚠️ Memory extraction failed: {e}")
 
 
-def should_use_tool(message: str, tool_definitions: list) -> dict | None:
+def should_use_tool(
+    message: str,
+    tool_definitions: list,
+    history: list | None = None,
+) -> dict | None:
     """
     Tanya LLM apakah pesan ini butuh tool.
     Return dict {tool_name, params} atau None.
     """
     tools_text = json.dumps(tool_definitions, ensure_ascii=False, indent=2)
 
-    system = f"""Kamu adalah router yang memutuskan apakah sebuah pertanyaan membutuhkan tool eksternal.
+    history_text = ""
+    if history:
+        recent = history[-4:]
+        history_text = "\n".join(
+            f"{m['role'].upper()}: {m['content'][:200]}"
+            for m in recent
+        )
+
+    history_section = ""
+    if history_text:
+        history_section = f"""
+Konteks percakapan sebelumnya:
+{history_text}
+"""
+
+    system = f"""Kamu adalah router yang memutuskan apakah pertanyaan membutuhkan tool eksternal.
 
 Tools yang tersedia:
 {tools_text}
 
+{history_section}
+
 Aturan:
-- Gunakan web_search HANYA jika pertanyaan butuh informasi terbaru, 
-  berita, harga, atau data real-time yang tidak mungkin kamu ketahui.
-- Jangan gunakan tool untuk pertanyaan umum, opini, atau analisis 
-  yang bisa dijawab dari knowledge sendiri.
-- Jangan gunakan tool untuk pertanyaan tentang user atau percakapan sebelumnya.
+- Gunakan web_search jika pertanyaan membutuhkan informasi terbaru.
+- Gunakan web_search jika pertanyaan adalah follow-up dari topik yang sebelumnya membutuhkan web search.
+- Gunakan read_url jika user memberi URL.
+- Jangan gunakan tool untuk pertanyaan tentang user atau knowledge pribadi.
 
-Jika butuh tool, balas dengan JSON:
-{{"tool": "web_search", "params": {{"query": "search query yang tepat"}}}}
+Balas HANYA JSON.
 
-Jika tidak butuh tool, balas dengan:
-{{"tool": null}}
+Jika perlu:
+{{"tool":"web_search","params":{{"query":"..."}}}}
 
-Balas HANYA dengan JSON. Tidak ada teks lain."""
+Jika tidak:
+{{"tool":null}}
+"""
 
     try:
         result = generate_response(
@@ -145,6 +166,18 @@ Balas HANYA dengan JSON. Tidak ada teks lain."""
         if result.startswith("```"):
             lines = result.split("\n")
             result = "\n".join(lines[1:-1])
+
+        print("\n========== ROUTER DEBUG ==========")
+        print("MESSAGE:")
+        print(message)
+
+        print("\nHISTORY:")
+        print(history_text if history_text else "(EMPTY)")
+
+        print("\nRAW LLM OUTPUT:")
+        print(result)
+
+        print("==================================\n")
 
         decision = json.loads(result)
         if decision.get("tool"):
@@ -201,7 +234,11 @@ def chat(
     # Tool calling check
     tool_used = None
     tool_definitions = get_tool_definitions()
-    tool_decision = should_use_tool(request.message, tool_definitions)
+    tool_decision = should_use_tool(
+        request.message,
+        tool_definitions,
+        messages[:-1],
+    )
 
     if tool_decision and tool_decision.get("tool"):
         tool_name = tool_decision["tool"]
@@ -214,9 +251,16 @@ def chat(
         messages.append({
             "role": "user",
             "content": (
-                f"[Tool Result - {tool_name}]\n{tool_result}\n\n"
-                f"Gunakan informasi di atas untuk menjawab pertanyaan: "
-                f"{request.message}"
+                f"[TOOL RESULT]\n"
+                f"{tool_result}\n\n"
+
+                "PENTING:\n"
+                "- Jawab HANYA berdasarkan TOOL RESULT di atas.\n"
+                "- Jangan menggunakan pengetahuan internal jika bertentangan.\n"
+                "- Jangan mengarang nama pemain, skor, assist, atau statistik.\n"
+                "- Jika informasi tidak ada pada TOOL RESULT, katakan dengan jelas bahwa informasi tersebut tidak tersedia.\n\n"
+
+                f"Pertanyaan pengguna:\n{request.message}"
             )
         })
 

@@ -1,35 +1,138 @@
+import json
+import logging
 import os
+
 from tavily import TavilyClient
 
+from tools.query_optimizer import optimize_search_query
 
-def search_web(query: str, max_results: int = 3) -> str:
+logger = logging.getLogger(__name__)
+
+
+def _run_search(client: TavilyClient, query: str, max_results: int):
     """
-    Melakukan web search menggunakan Tavily.
-    Return: string berisi hasil search yang siap di-inject ke prompt.
+    Satu kali request ke Tavily.
     """
+
+    logger.info("=" * 70)
+    logger.info("🔎 QUERY KE TAVILY")
+    logger.info(query)
+    logger.info("=" * 70)
+
+    response = client.search(
+        query=query,
+        max_results=max_results,
+        search_depth="basic",
+    )
+
+    # DEBUG — hapus setelah selesai investigasi
+    import json
+    print("=== RAW TAVILY RESPONSE ===")
+    print(json.dumps(response, indent=2, ensure_ascii=False))
+    print("===========================")
+
+    answer = response.get("answer")
+
+    if answer:
+        formatted = f"""Jawaban ringkas Tavily:
+
+{answer}
+
+"""
+    else:
+        formatted = ""
+
+    logger.info("=" * 70)
+    logger.info("📄 RESPONSE TAVILY")
+    logger.info(json.dumps(response, indent=2)[:4000])
+    logger.info("=" * 70)
+
+    return response
+
+
+def search_web(query: str, max_results: int = 5) -> str:
+    """
+    Web Search menggunakan Tavily.
+
+    Strategy:
+
+    1. Search original query.
+    2. Jika hasil jelek -> retry dengan query yang diperbaiki.
+    3. Gunakan AI Answer Tavily bila tersedia.
+    """
+
     api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        return "Web search tidak tersedia: TAVILY_API_KEY tidak ditemukan."
 
-    try:
-        client = TavilyClient(api_key=api_key)
-        response = client.search(
-            query=query,
-            max_results=max_results,
-            search_depth="basic",
-        )
+    if not api_key:
+        return "Web Search tidak tersedia (TAVILY_API_KEY belum diset)."
+
+    client = TavilyClient(api_key=api_key)
+
+    optimized_query = optimize_search_query(query)
+
+    print(f"🔎 Original Query : {query}")
+    print(f"✨ Optimized Query: {optimized_query}")
+
+    queries = [
+        optimized_query,
+        f"{optimized_query} latest",
+        f"{optimized_query} official result",
+    ]
+
+    best_response = None
+
+    for q in queries:
+
+        response = _run_search(client, q, max_results)
 
         results = response.get("results", [])
-        if not results:
-            return f"Tidak ada hasil untuk query: {query}"
 
-        formatted = f"Hasil web search untuk '{query}':\n\n"
-        for i, r in enumerate(results, 1):
-            formatted += f"{i}. **{r.get('title', 'No title')}**\n"
-            formatted += f"   {r.get('content', 'No content')[:300]}\n"
-            formatted += f"   Source: {r.get('url', '')}\n\n"
+        if results:
+            best_response = response
+            break
 
-        return formatted.strip()
+    if not best_response:
+        return f"Tidak ditemukan hasil untuk '{query}'."
 
-    except Exception as e:
-        return f"Web search gagal: {str(e)}"
+    answer = best_response.get("answer", "")
+    results = best_response.get("results", [])
+
+    output = []
+
+    output.append(f"## Web Search")
+    output.append(f"Original Query: {query}")
+
+    formatted = f"Hasil web search untuk '{optimized_query}'\n\n"
+
+    if answer:
+        output.append("")
+        output.append("### AI Summary")
+        output.append(answer)
+
+    output.append("")
+    output.append("### Sources")
+
+    for i, r in enumerate(results, 1):
+
+        title = r.get("title", "No title")
+
+        content = (
+            r.get("raw_content")
+            or r.get("content")
+            or ""
+        )
+
+        url = r.get("url", "")
+
+        output.append(
+            f"""
+{i}. {title}
+
+{content[:500]}
+
+Source:
+{url}
+""".strip()
+        )
+
+    return "\n\n".join(output)
