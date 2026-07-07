@@ -42,7 +42,7 @@ Example:
 
 User:
 
-> I'm a Backend Engineer.
+> I'm a Basketball player, i used to play shooting guard bcs my shoot accuracy is 80%.
 
 Later...
 
